@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.atomic_memory.models import AtomicMemoryContent
 from powercontext.builtin.artifacts.memory.prompts import MemoryExtractionProfile
+from powercontext.builtin.images.models import ImageAnalysisSource, image_text_evidence
 from powercontext.builtin.inference import InvalidInferenceOutputError, StructuredGenerator, TokenEstimator
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
 from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, SourceObservation, SourceRef, TextEvidence
@@ -128,12 +129,17 @@ async def project_atomic_memory_evidence(
     """Expose source-provided dates in content/metadata without synthesizing time."""
 
     value = stored.value
+    source_metadata = value.model_dump(mode="json", by_alias=True)
     if isinstance(value, SourceObservation):
         content = value.payload
         for projection in value.projections:
             if projection.key == TEXT_EVIDENCE_PROJECTION_KEY:
                 content = TextEvidence.model_validate(projection.value).model_dump(mode="json")
                 break
+    elif isinstance(value, ImageAnalysisSource):
+        projected = image_text_evidence(value)
+        content = projected.model_dump(mode="json")
+        source_metadata = projected.metadata
     else:
         materialized = await sources.read_value(value)
         content = (
@@ -144,7 +150,7 @@ async def project_atomic_memory_evidence(
         source_ref=stored.ref,
         journal_position=stored.journal_position,
         content=_JSON.validate_python(content),
-        source_metadata=_JSON.validate_python(value.model_dump(mode="json", by_alias=True)),
+        source_metadata=_JSON.validate_python(source_metadata),
         via_artifact=via_artifact,
     )
 

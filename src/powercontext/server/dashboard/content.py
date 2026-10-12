@@ -24,7 +24,7 @@ from powercontext.server.dashboard.api import DashboardAPI, ReadError, segment
 from powercontext.server.dashboard.markdown import profile_html
 from powercontext.server.dashboard.navigation import positive_revision
 from powercontext.server.dashboard.pagination import PAGE_SIZE, cursor_links, list_links, list_page
-from powercontext.server.dashboard.presenters import memory_view, usage_view
+from powercontext.server.dashboard.presenters import evidence_sources, memory_view, usage_view
 
 RECORDS = {"handoff-detail": "handoff", "experience": "experience", "skill": "skill"}
 
@@ -126,6 +126,9 @@ async def select_note(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
         if current and "matched_by" in current:
             ctx["selected_note"].update(matched_by=current["matched_by"], score=current["score"])
 
+    if ctx["selected_note"]:
+        ctx["related_sources"] = evidence_sources(ctx["selected_note"]["sources"])
+
 
 async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
     page, scope = ctx["page"], ctx["scope"]
@@ -141,7 +144,7 @@ async def load_record(api: DashboardAPI, request: Request, ctx: dict[str, Any]) 
     record = await api.record(scope, family, artifact, revision_number)
     ctx["data"][family] = record
     ctx["source_record"] = record
-    ctx["related_sources"] = [source for source in record["sources"] if source["source_type"] == "content"]
+    ctx["related_sources"] = evidence_sources(record["sources"])
 
 
 async def load_content(api: DashboardAPI, request: Request, ctx: dict[str, Any]) -> None:
@@ -161,6 +164,19 @@ async def load_content(api: DashboardAPI, request: Request, ctx: dict[str, Any])
         await load_collection(api, request, ctx, ctx["method_kind"])
     elif page == "usage":
         await load_stats(api, ctx)
+    elif page == "images":
+        ctx["image_status"] = await api.read("/v1/experimental/images/status", {"scope_id": ctx["scope"]})
+        if ctx["image_status"]["available"]:
+            result = await api.read(
+                "/v1/experimental/images/tasks/list",
+                {
+                    "scope_id": ctx["scope"],
+                    "cursor": request.query_params.get("image_cursor"),
+                    "limit": 12,
+                },
+            )
+            ctx["data"]["images"] = result["items"]
+            ctx["image_pager"] = cursor_links(request, ctx, "image", result["next_cursor"])
     else:
         await load_additional_page(api, request, ctx)
 
@@ -262,4 +278,4 @@ async def load_profile(api: DashboardAPI, request: Request, ctx: dict[str, Any])
     ctx["data"]["profile"] = record
     ctx["profile_html"] = profile_html(record["content"])
     ctx["source_record"] = record
-    ctx["related_sources"] = [source for source in record["sources"] if source["source_type"] == "content"]
+    ctx["related_sources"] = evidence_sources(record["sources"])

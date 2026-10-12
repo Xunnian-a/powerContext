@@ -40,6 +40,10 @@ def main(settings: CodexPluginSettings | None = None) -> int:
         if not isinstance(session_id, str) or not isinstance(cwd, str):
             return 0
         settings = CodexPluginSettings() if settings is None else settings
+        if settings.capture_images:
+            from image_desktop_watch import launch_watch
+
+            launch_watch()
         resolve_scope_id(
             cwd,
             session_id=session_id,

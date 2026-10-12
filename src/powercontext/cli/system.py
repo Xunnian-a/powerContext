@@ -393,6 +393,7 @@ class CodexSetupResult:
     plugin_version: str
     data_dir: str
     authorization_state: str = "not_attempted"
+    image_capture: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -472,6 +473,13 @@ def setup_codex(
         str,
         typer.Option(help="Git ref used for a remote marketplace source."),
     ] = DEFAULT_MARKETPLACE_REF,
+    capture_images: Annotated[
+        bool | None,
+        typer.Option(
+            "--capture-images/--no-capture-images",
+            help="Authorize images for this workspace; otherwise use the setup .env choice.",
+        ),
+    ] = None,
     server_url: Annotated[
         str | None,
         typer.Option(help="PowerContext Server URL; resolves host/common environment and saved settings."),
@@ -497,6 +505,7 @@ def setup_codex(
             server_url=server_url,
             allow_insecure_http=allow_insecure_http,
             json_output=json_output,
+            **({"capture_images": capture_images} if capture_images is not None else {}),
         ).result
     except SetupError as error:
         typer.echo(str(error), err=True)
@@ -511,12 +520,24 @@ def setup_codex(
         raise typer.Exit(code=1)
 
     if json_output:
-        typer.echo(json.dumps(asdict(result), indent=2))
+        payload = asdict(result)
+        if payload.get("image_capture") is None:
+            payload.pop("image_capture", None)
+        typer.echo(json.dumps(payload, indent=2))
         return
     typer.echo("PowerContext Codex setup complete.")
     typer.echo(f"Plugin: {result.plugin}@{result.marketplace} ({result.plugin_version})")
     typer.echo(f"Data directory: {result.data_dir}")
     typer.echo(f"Authorization: {result.authorization_state}")
+    if result.image_capture is not None:
+        typer.echo(
+            "Image capture: "
+            + (
+                "enabled; client collector managed automatically"
+                if result.image_capture.get("enabled")
+                else "disabled for this workspace"
+            )
+        )
     typer.echo("Next: run `powercontext server run`, start a new Codex session, then review `/hooks`.")
 
 
@@ -1264,7 +1285,9 @@ def doctor_integrations(
     run_doctor_integrations(json_output=json_output)
 
 
-def install_codex_plugin(*, source: str, ref: str, server_url: str | None = None) -> CodexSetupResult:
+def install_codex_plugin(
+    *, source: str, ref: str, server_url: str | None = None, capture_images: bool | None = None
+) -> CodexSetupResult:
     """Install the plugin from one local or Git marketplace source."""
 
     if which("codex") is None:
@@ -1305,12 +1328,21 @@ def install_codex_plugin(*, source: str, ref: str, server_url: str | None = None
             configure_codex_desktop_authorization(authorization.authorization)
         except OSError as error:
             raise SetupError(f"Cannot configure Codex Desktop authorization: {error}") from error  # noqa: TRY003
+    from powercontext.cli.codex_images import configure_images, plugin_root
+
+    try:
+        image_capture = configure_images(
+            plugin_root(marketplace_name, _required_string(plugin, "version")), capture_images
+        )
+    except ValueError as error:
+        raise SetupError(str(error)) from error
     return CodexSetupResult(
         marketplace=marketplace_name,
         plugin=_required_string(plugin, "name"),
         plugin_version=_required_string(plugin, "version"),
         data_dir=str(data_dir),
         authorization_state=authorization_state,
+        image_capture=image_capture,
     )
 
 
@@ -1647,6 +1679,10 @@ def run_codex_diagnostics() -> dict[str, Diagnostic]:
             detail="not checked because the PowerContext plugin is unavailable",
         )
         return diagnostics
+
+    from powercontext.cli.codex_images import image_diagnostic
+
+    diagnostics["images"] = image_diagnostic(plugin)
 
     try:
         servers = _run_codex_mcp_list()

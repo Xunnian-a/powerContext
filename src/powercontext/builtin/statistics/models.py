@@ -54,6 +54,7 @@ class ModelUsagePurpose(StrEnum):
     TOPIC_MEMORY_GENERATION = "topic_memory_generation"
     TOPIC_MEMORY_RECALL = "topic_memory_recall"
     TOPIC_MEMORY_INDEXING = "topic_memory_indexing"
+    IMAGE_PARSING = "image_parsing"
 
 
 class FamilyCount(BaseModel):
