@@ -247,6 +247,7 @@ def setup_host(
     ref: str,
     server_url: str | None = None,
     capture_prompts: bool = True,
+    capture_images: bool | None = None,
     allow_insecure_http: bool | None = None,
     json_output: bool = False,
     dsh_target: DshTarget | None = None,
@@ -271,6 +272,7 @@ def setup_host(
         ref=ref,
         server_url=transport.server_url,
         capture_prompts=capture_prompts,
+        **({"capture_images": capture_images} if capture_images is not None else {}),
         allow_insecure_http=transport.allow_insecure_http,
         **({"dsh_target": dsh_target} if dsh_target else {}),
     )
@@ -323,6 +325,7 @@ def install_host(
     ref: str,
     server_url: str | None,
     capture_prompts: bool,
+    capture_images: bool | None = None,
     allow_insecure_http: bool = False,
     dsh_target: DshTarget | None = None,
 ) -> object:
@@ -343,6 +346,8 @@ def install_host(
         options["allow_insecure_http"] = allow_insecure_http
     if descriptor.target_option and dsh_target:
         options["target"] = dsh_target
+    if name == "codex" and capture_images is not None:
+        options["capture_images"] = capture_images
     return installer(**options)
 
 

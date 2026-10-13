@@ -131,6 +131,16 @@ def test_codex_installed_mcp_endpoint_is_authoritative(tmp_path, monkeypatch):
     assert _resolve("codex") == ("http://memory.example:8000", True)
 
 
+def test_codex_ignores_explicitly_disabled_marketplace(tmp_path):
+    for name, url in (("old", "http://old.example"), ("local", "http://127.0.0.1:18171")):
+        _write(
+            tmp_path / f"CODEX_HOME/plugins/cache/{name}/powercontext/1/.mcp.json",
+            {"mcpServers": {"powercontext": {"url": url + "/mcp"}}},
+        )
+    (tmp_path / "CODEX_HOME/config.toml").write_text('[plugins."powercontext@old"]\nenabled = false\n')
+    assert _resolve("codex") == ("http://127.0.0.1:18171", False)
+
+
 @pytest.mark.parametrize("second_url", ["http://memory.example/mcp/", "http://another.example/mcp"])
 def test_codex_multiple_cache_versions_require_an_unambiguous_endpoint(tmp_path, second_url):
     for version, url in (("1", "http://memory.example/mcp"), ("2", second_url)):

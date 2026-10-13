@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, cast
 
@@ -73,13 +74,23 @@ def _environment_url(*names: str) -> str | None:
 
 
 def _codex_url() -> str | None:
-    cache = _home("CODEX_HOME", ".codex") / "plugins" / "cache"
+    home = _home("CODEX_HOME", ".codex")
+    cache = home / "plugins" / "cache"
     try:
         paths = list(cache.glob("*/powercontext/*/.mcp.json"))
-    except OSError:
+        config = home / "config.toml"
+        declarations = tomllib.loads(config.read_text(encoding="utf-8")).get("plugins", {}) if config.is_file() else {}
+    except (OSError, ValueError):
         raise ValueError(_UNKNOWN) from None
+    if not isinstance(declarations, dict):
+        raise ValueError(_UNKNOWN)  # noqa: TRY004 - native configuration boundary reports one public error type.
     urls = set()
     for path in paths:
+        declared = declarations.get("powercontext@" + path.parents[2].name, {})
+        if not isinstance(declared, dict):
+            raise ValueError(_UNKNOWN)  # noqa: TRY004 - same configuration error contract.
+        if declared.get("enabled") is False:
+            continue
         entry = _object_at(_read(path), "mcpServers", "powercontext")
         raw = entry.get("url")
         if not isinstance(raw, str) or not raw.rstrip("/").endswith("/mcp"):
