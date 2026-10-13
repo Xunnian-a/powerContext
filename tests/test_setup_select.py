@@ -186,6 +186,23 @@ def test_setup_select_installs_only_the_requested_hosts(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize("capture_images", [True, False, None])
+def test_codex_host_installation_preserves_explicit_image_consent(monkeypatch, capture_images) -> None:
+    def install(*, source, ref, server_url=None, capture_images=None):
+        return capture_images
+
+    monkeypatch.setattr(system_cli, "install_codex_plugin", install)
+    result = hosts_cli.install_host(
+        "codex",
+        source="./integrations/codex",
+        ref="master",
+        server_url="http://127.0.0.1:18171",
+        capture_prompts=False,
+        capture_images=capture_images,
+    )
+    assert result is capture_images
+
+
 def test_setup_select_continues_after_a_selected_host_fails(monkeypatch) -> None:
     installers = _patch_installers(
         monkeypatch,
