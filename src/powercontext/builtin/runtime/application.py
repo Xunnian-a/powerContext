@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, JsonValue, ValidationError
@@ -231,6 +231,12 @@ from powercontext.builtin.runtime.prepared_context import (
     PreparedMemoryCandidates,
     PreparedProfileCandidate,
 )
+from powercontext.builtin.runtime.prepared_optimization import (
+    POLICY_VERSION,
+    OptimizationResult,
+    PreparedTokenOptimizer,
+)
+from powercontext.builtin.runtime.prepared_tokens import load_prepared_token_counter
 from powercontext.builtin.runtime.protocols import (
     BuiltinTriggers,
     PowerContextProvider,
@@ -1054,6 +1060,16 @@ class ScopedContextApplication:
                 profile_candidates=profile_candidates,
                 code_candidates=code,
             )
+            build = self._optimize_prepared_build(
+                builder=builder,
+                request=request,
+                legacy=build,
+                memory_candidates=memory_candidates,
+                topic_memory_hits=topic_memory_hits,
+                experience_candidates=experience_candidates,
+                profile_candidates=profile_candidates,
+                span=span,
+            )
             if recall_effort is not None:
                 recall_effort = replace(
                     recall_effort,
@@ -1082,6 +1098,89 @@ class ScopedContextApplication:
                         "powercontext.context.build.recall.dropped_items": recall_effort.dropped_items,
                     })
         return build, recall_effort
+
+    def _optimize_prepared_build(
+        self,
+        *,
+        builder: PreparedContextBuilder,
+        request: PrepareContextRequest,
+        legacy: PreparedContextBuild,
+        memory_candidates: Sequence[PreparedMemoryCandidates],
+        topic_memory_hits: Sequence[TopicMemorySearchHit],
+        experience_candidates: Sequence[PreparedExperienceCandidates],
+        profile_candidates: Sequence[PreparedProfileCandidate],
+        span: RuntimeSpan | None,
+    ) -> PreparedContextBuild:
+        optimizer = self._runtime._prepared_token_optimizer
+        if optimizer is None:
+            return legacy
+        started = perf_counter()
+        try:
+            optimization = optimizer.optimize(
+                builder=builder,
+                request=request,
+                legacy=legacy,
+                current_scope_id=self.scope_id,
+                memory_candidates=memory_candidates,
+                topic_memory_hits=topic_memory_hits,
+                experience_candidates=experience_candidates,
+                profile_candidates=profile_candidates,
+            )
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.ERROR,
+                "Prepared context optimization failed",
+                extra={
+                    "event": "context.token_optimization.failed",
+                    "unit": "context",
+                    "error_type": type(error).__name__,
+                },
+            )
+            optimization = OptimizationResult(legacy, fallback_reason="internal_error")
+        attributes: dict[str, TraceAttribute] = {
+            "mode": self._runtime.token_optimization_mode,
+            "policy_version": POLICY_VERSION,
+            "applied": optimization.build is not legacy,
+            "reason": optimization.fallback_reason or "smaller",
+            "selection_changed": optimization.selection_changed,
+            "omitted_sections": optimization.omitted_sections,
+            "rules": ",".join(optimization.rules),
+            "target_tokens": self._runtime.token_optimization_target_tokens,
+            "duration_ms": (perf_counter() - started) * 1000,
+        }
+        for key in (
+            "baseline_tokens",
+            "proposed_tokens",
+            "baseline_bytes",
+            "proposed_bytes",
+            "legacy_tokens",
+            "legacy_bytes",
+        ):
+            value = getattr(optimization, key)
+            if value is not None:
+                attributes[key] = value
+        if optimization.proposed is not None:
+            attributes["legacy_delivered_count"] = len(legacy.origins)
+            attributes["proposed_delivered_count"] = len(optimization.proposed.origins)
+        if optimizer.counter is not None:
+            attributes["tokenizer_id"] = optimizer.counter.profile.estimator_id
+            attributes["tokenizer_version"] = optimizer.counter.profile.version
+        if span is not None:
+            span.set_attributes({
+                f"powercontext.context.token_optimization.{key}": value for key, value in attributes.items()
+            })
+        log_safely(
+            logger,
+            logging.INFO,
+            "Prepared context token optimization",
+            extra={
+                "event": "context.token_optimization",
+                "unit": "context",
+                **attributes,
+            },
+        )
+        return optimization.build
 
     async def _available_atomic_candidates(
         self, candidates: list[PreparedMemoryCandidates]
@@ -3430,6 +3529,9 @@ class BuiltinRuntime:
         code_service: CodeService | None = None,
         source_window_limit: int = 100,
         context_assembly_max_entries: int = 8,
+        token_optimization_mode: Literal["off", "shadow", "active"] = "off",  # noqa: S107 - Deployment mode, not a secret.
+        token_optimization_target_tokens: int = 1800,
+        token_optimization_tokenizer: Literal["cl100k_base", "o200k_base"] = "o200k_base",  # noqa: S107 - Vocabulary profile.
         recall_sufficiency_policy: RecallSufficiencyPolicy | None = None,
         scope_cache_size: int = DEFAULT_SCOPE_CACHE_SIZE,
         scope_evictor: ScopeEvictor | None = None,
@@ -3487,6 +3589,12 @@ class BuiltinRuntime:
             raise _RuntimeConfigurationError("source_window_limit")
         if context_assembly_max_entries < 1:
             raise _RuntimeConfigurationError("context_assembly_max_entries")
+        if token_optimization_mode not in {"off", "shadow", "active"}:
+            raise _RuntimeConfigurationError("token_optimization_mode")
+        if type(token_optimization_target_tokens) is not int or token_optimization_target_tokens < 1:
+            raise _RuntimeConfigurationError("token_optimization_target_tokens")
+        if token_optimization_tokenizer not in {"cl100k_base", "o200k_base"}:
+            raise _RuntimeConfigurationError("token_optimization_tokenizer")
         if scope_cache_size < 1:
             raise _RuntimeConfigurationError("scope_cache_size")
         self._provider = provider
@@ -3562,6 +3670,18 @@ class BuiltinRuntime:
         self._scheduled_experience_runner = scheduled_experience_runner
         self.source_window_limit = source_window_limit
         self.context_assembly_max_entries = context_assembly_max_entries
+        self.token_optimization_mode = token_optimization_mode
+        self.token_optimization_target_tokens = token_optimization_target_tokens
+        self.token_optimization_tokenizer = token_optimization_tokenizer
+        self._prepared_token_optimizer = (
+            None
+            if token_optimization_mode == "off"  # noqa: S105 - Deployment mode, not a secret.
+            else PreparedTokenOptimizer(
+                token_optimization_mode,
+                token_optimization_target_tokens,
+                load_prepared_token_counter(token_optimization_tokenizer),
+            )
+        )
         self.recall_sufficiency_policy = recall_sufficiency_policy
         self._scope_cache = ScopeCache(
             scope_cache_size,
