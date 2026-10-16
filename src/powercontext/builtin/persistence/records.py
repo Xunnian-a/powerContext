@@ -236,7 +236,9 @@ class RelationalRecordService:
     ) -> SourceRecord:
         try:
             async with self._database.transaction() as connection:
-                stored, created = await self._sources.add_with_status(connection, scope_id, source)
+                stored, created = await self._sources.add_with_status(
+                    connection, scope_id, source, apply_definition=True
+                )
                 if created and self._processing_pending is not None:
                     for binding_name in self._source_processing_bindings:
                         await self._processing_pending.raise_source(
@@ -370,7 +372,7 @@ class RelationalRecordService:
         )
         try:
             async with self._database.transaction() as connection:
-                stored = await self._sources.add(connection, scope_id, source)
+                stored = await self._sources.add(connection, scope_id, source, apply_definition=True)
                 artifact = await writer.create(connection, scope_id, artifact_id, prepared, stored.ref)
         except (StoredPayloadConflictError, RevisionConflictError) as error:
             raise BaseValueConflictError("artifact", (scope_id, family, artifact_id)) from error
@@ -412,7 +414,7 @@ class RelationalRecordService:
                         ),
                     ),
                 )
-                stored = await self._sources.add(connection, scope_id, source)
+                stored = await self._sources.add(connection, scope_id, source, apply_definition=True)
                 artifact = await writer.create(connection, scope_id, artifact_id, value, stored.ref)
                 created.append(_artifact_created(scope_id, artifact))
         return tuple(created)
@@ -699,7 +701,7 @@ class RelationalRecordService:
                     ),
                 )
                 try:
-                    stored = await self._sources.add(connection, scope_id, source)
+                    stored = await self._sources.add(connection, scope_id, source, apply_definition=True)
                     revised = await writer.replace(connection, scope_id, current, prepared, stored.ref)
                 except StoredPayloadConflictError as error:
                     raise BaseValueConflictError("source", (scope_id, CONTENT_SOURCE_NAME, source.name)) from error
